@@ -106,7 +106,16 @@ Key points:
 
 ## Deploy (Docker Compose / Portainer)
 
-A ready-to-use [`docker-compose.yml`](docker-compose.yml) brings up the enricher **and**
+Two compose files are provided:
+
+- [`docker-compose.yml`](docker-compose.yml) — **full stack**: the enricher **and** a
+  pre-wired OpenTelemetry Collector. Use this if you don't already run a collector.
+- [`docker-compose.enricher-only.yml`](docker-compose.enricher-only.yml) — **just the
+  enricher**, for when you already run your own collector (wire it per the section above).
+
+### Full stack
+
+The full [`docker-compose.yml`](docker-compose.yml) brings up the enricher **and**
 an OpenTelemetry Collector wired in the internal topology above (collector config is
 embedded, so it works pasted into Portainer's web editor). Set these as Portainer
 **stack environment variables**:

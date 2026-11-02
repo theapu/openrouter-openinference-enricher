@@ -1,0 +1,41 @@
+# Enricher-only stack — for when you ALREADY run an OpenTelemetry Collector.
+# Wire the collector per the "Wiring into an existing OpenTelemetry Collector"
+# section of the README (two pipelines; export JSON to this container, receive the
+# enriched traces back on otlp/back, then export to Phoenix).
+#
+# Env (optional):
+#   IMAGE         override the image/tag (default: latest)
+#   FORWARD_URL   your collector's otlp/back receiver
+#                 (default http://otel-collector:4319/v1/traces)
+#   INGEST_TOKEN  if set, inbound requests must send Authorization: Bearer <token>
+#
+# Connectivity: the enricher and your collector must reach each other BOTH ways
+# (collector -> enricher:8080, and enricher -> collector via FORWARD_URL).
+#   Easiest: run both on the SAME docker network so they resolve by name — uncomment
+#   the `networks:` blocks below and set your collector's network name. Then you can
+#   drop the published port.
+#   Otherwise the published port lets a collector on the same host reach it at
+#   http://<host>:8080/v1/traces.
+name: openrouter-enricher
+
+services:
+  enricher:
+    image: ${IMAGE:-theapu/openrouter-openinference-enricher:latest}
+    container_name: openrouter-enricher
+    restart: unless-stopped
+    environment:
+      FORWARD_URL: "${FORWARD_URL:-http://otel-collector:4319/v1/traces}"
+      # INGEST_TOKEN: "${INGEST_TOKEN}"
+    ports:
+      - "8080:8080"          # collector exports to http://<host>:8080/v1/traces
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:8080/healthz').status==200 else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    # networks: [otel]
+
+# networks:
+#   otel:
+#     external: true
+#     name: <your collector's docker network>
