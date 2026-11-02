@@ -36,6 +36,74 @@ OpenRouter (cloud) -> Caddy -> collector :4318 (public)
                                 Phoenix
 ```
 
+## Wiring into an existing OpenTelemetry Collector
+
+The enricher sits between **two** collector pipelines: the public pipeline exports the
+raw OpenRouter traces to the enricher as OTLP/**JSON**; the enricher forwards the
+enriched traces back into a second internal receiver, which exports them to Phoenix.
+
+Add to your collector `config.yaml`:
+
+```yaml
+extensions:
+  bearertokenauth/openrouter:        # optional: auth the public ingest
+    scheme: "Bearer"
+    token: "${env:OPENROUTER_INGEST_TOKEN}"
+
+receivers:
+  otlp/in:                           # public ingest from OpenRouter (via your reverse proxy)
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4318
+        auth:
+          authenticator: bearertokenauth/openrouter
+  otlp/back:                         # internal: enriched traces returning from this container
+    protocols:
+      http:
+        endpoint: 0.0.0.0:4319
+
+processors:
+  batch: {}
+
+exporters:
+  otlphttp/enrich:
+    traces_endpoint: http://enricher:8080/v1/traces   # this container
+    encoding: json                                     # IMPORTANT: send JSON, not protobuf
+  otlphttp/phoenix:
+    traces_endpoint: ${env:PHOENIX_OTLP_ENDPOINT}      # e.g. http://phoenix:6006/v1/traces
+    headers:
+      Authorization: "Bearer ${env:PHOENIX_API_KEY}"
+      x-project-name: "openrouter"
+
+service:
+  extensions: [bearertokenauth/openrouter]
+  pipelines:
+    traces/in:                       # OpenRouter -> enricher
+      receivers: [otlp/in]
+      processors: [batch]
+      exporters: [otlphttp/enrich]
+    traces/out:                      # enricher -> Phoenix (protobuf)
+      receivers: [otlp/back]
+      processors: [batch]
+      exporters: [otlphttp/phoenix]
+```
+
+Then run this container with `FORWARD_URL` pointing back at the collector's `otlp/back`
+receiver:
+
+```sh
+docker run -d --name enricher \
+  -e FORWARD_URL=http://otel-collector:4319/v1/traces \
+  theapu/openrouter-openinference-enricher:latest
+```
+
+Key points:
+- The exporter to the enricher **must** use `encoding: json` (the enricher parses JSON;
+  Phoenix separately requires protobuf, which the `otlphttp/phoenix` exporter sends by default).
+- `bearertokenauth` needs the **contrib** collector distribution
+  (`otel/opentelemetry-collector-contrib`); drop it if you don't need ingest auth.
+- `${env:...}` values are read from the collector's own environment at runtime.
+
 ## Deploy (Docker Compose / Portainer)
 
 A ready-to-use [`docker-compose.yml`](docker-compose.yml) brings up the enricher **and**
