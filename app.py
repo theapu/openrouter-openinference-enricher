@@ -13,10 +13,15 @@ OTLP/JSON on to FORWARD_URL (normally back into the collector, which converts to
 protobuf and exports to Phoenix). Designed to run INTERNALLY; it does not need to
 be exposed to the internet.
 """
+import gzip
 import json
+import logging
 import os
 import httpx
 from fastapi import FastAPI, Request, Response, Header
+
+logging.basicConfig(level=logging.INFO)
+logger = logging.getLogger("enricher")
 
 app = FastAPI()
 
@@ -145,12 +150,24 @@ def health():
 
 
 @app.post("/v1/traces")
-async def traces(request: Request, authorization: str = Header(default=None)):
+async def traces(request: Request,
+                 authorization: str = Header(default=None),
+                 content_encoding: str = Header(default=None)):
     if INGEST_TOKEN and authorization != f"Bearer {INGEST_TOKEN}":
         return Response(status_code=401, content="Invalid token")
+
+    raw = await request.body()
+    if content_encoding and "gzip" in content_encoding.lower():
+        try:
+            raw = gzip.decompress(raw)
+        except Exception as e:
+            logger.warning("gunzip failed: %s", e)
+            return Response(status_code=400, content="bad gzip")
     try:
-        body = await request.json()
-    except Exception:
+        body = json.loads(raw)
+    except Exception as e:
+        logger.warning("json parse failed (%d bytes, content-encoding=%s): %s",
+                       len(raw), content_encoding, e)
         return Response(status_code=400, content="bad json")
 
     for rs in body.get("resourceSpans", []):
