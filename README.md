@@ -36,7 +36,25 @@ OpenRouter (cloud) -> Caddy -> collector :4318 (public)
                                 Phoenix
 ```
 
-## Run
+## Deploy (Docker Compose / Portainer)
+
+A ready-to-use [`docker-compose.yml`](docker-compose.yml) brings up the enricher **and**
+an OpenTelemetry Collector wired in the internal topology above (collector config is
+embedded, so it works pasted into Portainer's web editor). Set these as Portainer
+**stack environment variables**:
+
+| Variable | Example | Purpose |
+|---|---|---|
+| `OPENROUTER_INGEST_TOKEN` | `s3cret…` | Shared secret OpenRouter sends (`Authorization: Bearer …`) |
+| `PHOENIX_OTLP_ENDPOINT` | `http://192.168.255.169:6006/v1/traces` | Your Phoenix OTLP endpoint |
+| `PHOENIX_API_KEY` | `…` | Phoenix System API key |
+| `IMAGE` | `theapu/openrouter-openinference-enricher:v1.0.0` | (optional) pin the enricher image |
+
+Then front the collector with Caddy (`otel.apu.ltd { reverse_proxy <host>:4318 }`) and
+set OpenRouter Broadcast's **OpenTelemetry Collector** destination to
+`https://otel.apu.ltd/v1/traces` with header `Authorization: Bearer <OPENROUTER_INGEST_TOKEN>`.
+
+## Run (standalone)
 
 ```sh
 docker run -d --name openrouter-openinference-enricher \
@@ -67,4 +85,4 @@ Produces `<user>/openrouter-openinference-enricher:1.0.0`, `:1.0`, and `:latest`
 
 ## License
 
-MIT — see [LICENSE](LICENSE).
+GPL-3.0 — see [LICENSE](LICENSE).
