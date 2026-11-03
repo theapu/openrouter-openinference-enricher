@@ -1,22 +1,25 @@
 # openrouter-openinference-enricher
 
-A tiny OTLP trace enricher that makes **OpenRouter Broadcast** traces render with the
-full structured message / tool-call view in **Arize Phoenix** (and any OpenInference backend).
+A tiny OTLP trace enricher that makes **OpenRouter Broadcast** *and* **Anthropic native-OTel**
+traces render with the full structured message / tool-call view in **Arize Phoenix**
+(and any OpenInference backend). Two ingest lanes, one container.
 
 ## Why
 
-OpenRouter Broadcast emits the whole conversation as one OpenAI-format JSON string
-(`span.input` / `span.output`). Phoenix only renders the friendly, role-by-role
-message and tool-call view from the OTel GenAI **"parts"** schema. This service parses
-that JSON and rewrites each LLM span's input/output into:
-
-- `gen_ai.input.messages`
-- `gen_ai.output.messages`
-- `gen_ai.system_instructions`
-
-(in the GenAI parts schema), sets `openinference.span.kind=LLM`, and drops the noisy
-`provider attempt` child spans. Phoenix (>=15.10) then converts those to
+**OpenRouter lane (`POST /v1/traces`).** OpenRouter Broadcast emits the whole conversation
+as one OpenAI-format JSON string (`span.input` / `span.output`). Phoenix only renders the
+friendly, role-by-role view from the OTel GenAI **"parts"** schema. This lane parses that JSON
+and rewrites each LLM span's input/output into `gen_ai.input.messages` /
+`gen_ai.output.messages` / `gen_ai.system_instructions`, sets `openinference.span.kind=LLM`,
+and drops the noisy `provider attempt` child spans. Phoenix (>=15.10) then converts those to
 `llm.input_messages.*` and renders the structured view.
+
+**Anthropic lane (`POST /anthropic/v1/traces`).** Anthropic's native OTel already carries the
+GenAI parts, and Phoenix converts the *input* automatically — but **not the output** (it leaves
+a `{"id","model"}` stub in `output.value`). This lane parses `gen_ai.output.messages`, emits
+`llm.output_messages.*` (role + text + tool calls) and a clean plain-text `output.value`
+(dropping empty `reasoning` parts and the escaped-JSON blob), so the Output panel shows the
+actual answer.
 
 ## Architecture
 
@@ -141,13 +144,48 @@ docker run -d --name openrouter-openinference-enricher \
 
 ### Environment
 
-- `FORWARD_URL` — where to POST the enriched OTLP/JSON (default `http://otel-collector:4318/v1/traces`).
-- `INGEST_TOKEN` — optional. If set, requests must carry `Authorization: Bearer <token>`.
+- `FORWARD_URL` — where to POST the enriched **OpenRouter** OTLP/JSON (default `http://otel-collector:4318/v1/traces`).
+- `FORWARD_URL_ANTHROPIC` — where to POST the enriched **Anthropic** OTLP/JSON (default `http://otel-collector:4321/v1/traces`).
+- `INGEST_TOKEN` — optional. If set, requests on **both** lanes must carry `Authorization: Bearer <token>`.
 
 ## Endpoints
 
-- `POST /v1/traces` — OTLP/HTTP JSON in, enriched OTLP/HTTP JSON forwarded on.
+- `POST /v1/traces` — OpenRouter lane. OTLP/HTTP JSON in, enriched OTLP/HTTP JSON forwarded to `FORWARD_URL`.
+- `POST /anthropic/v1/traces` — Anthropic lane. OTLP/HTTP JSON in, enriched OTLP/HTTP JSON forwarded to `FORWARD_URL_ANTHROPIC`.
 - `GET /healthz` — liveness.
+
+## Anthropic lane — collector wiring
+
+Point Anthropic's native OTel at the collector (own receiver + token), export it to the
+enricher's `/anthropic` endpoint, and return it to a receiver that exports to the Anthropic
+Phoenix project:
+
+```yaml
+receivers:
+  otlp/anthropic:              # public ingest from Anthropic (own bearer token)
+    protocols: { http: { endpoint: 0.0.0.0:4320, auth: { authenticator: bearertokenauth/anthropic } } }
+  otlp/back_anthropic:         # internal: enriched Anthropic traces coming back
+    protocols: { http: { endpoint: 0.0.0.0:4321 } }
+exporters:
+  otlphttp/enrich_anthropic:
+    traces_endpoint: http://openrouter-enricher:8080/anthropic/v1/traces
+    encoding: json
+    headers: { Authorization: "Bearer ${env:INGEST_TOKEN}" }   # if INGEST_TOKEN set
+  otlphttp/phoenix_anthropic:
+    traces_endpoint: ${env:PHOENIX_OTLP_ENDPOINT}
+    headers: { Authorization: "Bearer ${env:PHOENIX_API_KEY}", x-project-name: "Anthropic" }
+service:
+  pipelines:
+    traces/anthropic:          # Anthropic -> enricher
+      receivers: [otlp/anthropic]
+      processors: [batch]
+      exporters: [otlphttp/enrich_anthropic]
+    traces/anthropic_out:      # enricher -> Phoenix (Anthropic project)
+      receivers: [otlp/back_anthropic]
+      processors: [batch]
+      exporters: [otlphttp/phoenix_anthropic]
+```
+Enricher env: `FORWARD_URL_ANTHROPIC=http://otel-collector:4321/v1/traces`.
 
 ## Releasing
 
